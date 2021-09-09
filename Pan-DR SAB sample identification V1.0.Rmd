@@ -1,0 +1,80 @@
+bin---
+title: "Pan-DR SAB sample identification V1.0"
+output: html_notebook
+---
+```{r}
+#Loading libraries. 
+#The memory.limit function was required on the computer I used to increase the memory size so that large tables could be loaded. It may not be needed in all cases.
+library(tidyverse)
+library(readxl)
+library(openxlsx)
+memory.limit(size=56000)
+```
+
+```{r}
+#Load HistoTrac tables.
+(Patient <- readRDS(file = "Patient.rds"))
+(TestDetail <- readRDS(file = "TestDetail.rds"))
+(Sample <- readRDS(file = "Sample.rds"))
+(Test <- readRDS(file = "Test.rds"))
+```
+
+```{r}
+#The TestDetail table contains all of the SAB results in multiple rows. It also contains lots of other types of results, so it would be best to sort for SAB tests. Unfortunately, there is not a specific value that marks a row as coming from an SAB test.
+
+#The best way to determine which rows are from SAB results is to determine which TestId values came from SAB tests. That data is in the Test table.
+
+#Start by filtering the test table for SAB tests.
+(SAB_tests <- Test %>% filter(str_detect(TestTypeCd, 'LSA')))
+
+#Then filter against the list of SAB tests as defined by the SAB_tests table.
+(TestDetail_SAB <- TestDetail
+   %>% semi_join(SAB_tests, by = "TestId")
+ 
+#Next filter by rows that have MFI values, as these will be SAB results.
+   %>% filter(!is.na(SingleAgNormalized))
+
+#Select only pertinent columns to simplify the table
+   %>% select(TestId, TestDetailTypeCd, SingleAgBead, SingleAgRaw, SingleAgNormalized, SingleAgSpecAbbr, SingleAgSpecificity)
+
+#Separate the Bw4/w6 specificities into a separate column.
+   %>% separate(SingleAgSpecAbbr, sep = ",", into = c("SAB_sero_spec", "SAB_Bw4Bw6_spec"))
+   )
+
+```
+
+```{r}
+#This code finds all samples that exhibited pan-DR reactivity.
+
+#Filter for DR beads.
+(Pan_DR_SAB_results <- TestDetail_SAB
+   %>% filter((str_detect(SAB_sero_spec, "DR")))
+#Pan-DR reactivity often seems to exclude one of the DR52 beads. To find all potential pan-DR-type reactivities, exclude DR51/52/53 beads.
+   %>% filter(!(str_detect(SAB_sero_spec, "DR5")))
+#Grouping by TestID makes the code look for positive results within the same test sample. 
+   %>% group_by(TestId)
+#1,000 MFI is used as the cutoff for bead reactivity.
+   %>% filter(all(SingleAgNormalized >= 1000))
+#Now we have all of the pan-DR positive tests, the rest of the code links to other tables to determine the patients and samples the tests belong to.
+   %>% left_join(Test, by = "TestId")
+   %>% select(TestId, SingleAgBead, SingleAgNormalized, SAB_sero_spec, SingleAgSpecificity: TestDt)
+   %>% left_join(Sample, by = c("SampleId" = "SampleID"))
+   %>% select(PatientId, SampleNbr, TestId:TestDt)
+   %>% left_join(Patient, by = "PatientId")
+   %>% select(PatientId, firstnm:lastnm, HospitalID, categoryCd, RaceCd, SampleNbr:TestDt)
+)
+```
+
+```{r}
+#Remove all duplicate entries so the resulting table lists each patient with pan-DR reactivity. The table is simplified to omit many columns, but still lists at least one sample that exhibited pan-DR reactivity.
+(Pan_DR_patients <- Pan_DR_SAB_results  
+   %>% ungroup(TestId)
+   %>% distinct(PatientId, .keep_all = TRUE)
+   %>% select(PatientId:SampleNbr)
+ )
+
+#You can save this table to a file, either csv or Excel, by removing the "#" from the lines below. 
+
+#write_excel_csv(Pan_DR_patients, "Pan_DR_patients.txt")
+#write.xlsx(Pan_DR_patients, file = "Pan_DR_patients.xlsx", overwrite = T)
+```
